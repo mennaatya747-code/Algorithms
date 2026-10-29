@@ -1,0 +1,33 @@
+
+import heapq
+
+def min_meeting_rooms(meetings):
+    if not meetings:
+        return 0
+
+    # Sort meetings by start time
+    meetings.sort(key=lambda meeting: meeting[0])
+
+    # Min-heap stores meeting end times
+    min_heap = []
+
+    for start, end in meetings:
+        # Reuse a room if its meeting has ended
+        if min_heap and min_heap[0] <= start:
+            heapq.heappop(min_heap)
+
+        # Allocate a room for the current meeting
+        heapq.heappush(min_heap, end)
+
+    # Heap size = minimum number of rooms needed
+    return len(min_heap)
+
+
+meetings = [
+    (0, 30),
+    (5, 10),
+    (15, 20)
+]
+
+print("Minimum rooms:", min_meeting_rooms(meetings))
+Minimum rooms: 2
