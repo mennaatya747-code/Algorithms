@@ -1,0 +1,248 @@
+
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <chrono>
+#include <random>
+#include <iomanip>
+#include <cmath>
+using namespace std;
+using namespace chrono;
+
+using Big = vector<long long>;
+
+const long long BASE = 10000;
+const int CUTOFF = 32; // Karatsuba uses school-book below this size
+
+void trim(Big &a) {
+    while (a.size() > 1 && a.back() == 0)
+        a.pop_back();
+}
+
+Big add(const Big &a, const Big &b) {
+    Big c(max(a.size(), b.size()) + 1, 0);
+    long long carry = 0;
+
+    for (size_t i = 0; i < c.size() - 1; i++) {
+        long long x = carry;
+        if (i < a.size()) x += a[i];
+        if (i < b.size()) x += b[i];
+
+        c[i] = x % BASE;
+        carry = x / BASE;
+    }
+
+    c.back() = carry;
+    trim(c);
+    return c;
+}
+
+// Requires a >= b
+Big subtract(const Big &a, const Big &b) {
+    Big c = a;
+    long long borrow = 0;
+
+    for (size_t i = 0; i < c.size(); i++) {
+        long long x = c[i] - borrow;
+        if (i < b.size()) x -= b[i];
+
+        if (x < 0) {
+            x += BASE;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+
+        c[i] = x;
+    }
+
+    trim(c);
+    return c;
+}
+
+Big schoolBook(const Big &a, const Big &b) {
+    Big c(a.size() + b.size() + 1, 0);
+
+    for (size_t i = 0; i < a.size(); i++) {
+        long long carry = 0;
+
+        for (size_t j = 0; j < b.size(); j++) {
+            long long cur = c[i + j]
+                          + a[i] * b[j] + carry;
+
+            c[i + j] = cur % BASE;
+            carry = cur / BASE;
+        }
+
+        size_t k = i + b.size();
+
+        while (carry > 0) {
+            long long cur = c[k] + carry;
+            c[k] = cur % BASE;
+            carry = cur / BASE;
+            k++;
+        }
+    }
+
+    trim(c);
+    return c;
+}
+
+Big slice(const Big &a, size_t start, size_t end) {
+    if (start >= a.size()) return Big{0};
+
+    end = min(end, a.size());
+    Big result(a.begin() + start, a.begin() + end);
+    trim(result);
+    return result;
+}
+
+void addShifted(Big &result, const Big &part, size_t shift) {
+    if (result.size() < part.size() + shift + 1)
+        result.resize(part.size() + shift + 1, 0);
+
+    long long carry = 0;
+    size_t i = 0;
+
+    for (; i < part.size(); i++) {
+        long long cur = result[i + shift] + part[i] + carry;
+        result[i + shift] = cur % BASE;
+        carry = cur / BASE;
+    }
+
+    size_t k = i + shift;
+
+    while (carry > 0) {
+        if (k == result.size()) result.push_back(0);
+
+        long long cur = result[k] + carry;
+        result[k] = cur % BASE;
+        carry = cur / BASE;
+        k++;
+    }
+}
+
+Big karatsuba(const Big &a, const Big &b) {
+    if (min(a.size(), b.size()) <= CUTOFF)
+        return schoolBook(a, b);
+
+    size_t n = max(a.size(), b.size());
+    size_t m = n / 2;
+
+    Big a0 = slice(a, 0, m);
+    Big a1 = slice(a, m, a.size());
+    Big b0 = slice(b, 0, m);
+    Big b1 = slice(b, m, b.size());
+
+    Big z0 = karatsuba(a0, b0);
+    Big z2 = karatsuba(a1, b1);
+
+    Big z1 = karatsuba(add(a0, a1), add(b0, b1));
+    z1 = subtract(z1, z0);
+    z1 = subtract(z1, z2);
+
+    Big result{0};
+    addShifted(result, z0, 0);
+    addShifted(result, z1, m);
+    addShifted(result, z2, 2 * m);
+
+    trim(result);
+    return result;
+}
+
+Big randomNumber(int limbs, mt19937 &rng) {
+    uniform_int_distribution<long long> dist(0, BASE - 1);
+    Big a(limbs);
+
+    for (auto &digit : a)
+        digit = dist(rng);
+
+    a.back() = 1 + rng() % (BASE - 1);
+    return a;
+}
+
+volatile long long checksum = 0;
+
+template <typename Function>
+double benchmark(Function multiply, const Big &a,
+                 const Big &b, int repetitions) {
+    auto start = steady_clock::now();
+
+    for (int i = 0; i < repetitions; i++) {
+        Big result = multiply(a, b);
+        checksum = checksum + result[0];
+    }
+
+    auto finish = steady_clock::now();
+
+    return duration<double, milli>(finish - start).count()
+           / repetitions;
+}
+
+int main() {
+    mt19937 rng(12345);
+
+    vector<int> sizes = {
+        8, 16, 24, 32, 48, 64, 96,
+        128, 192, 256, 384, 512
+    };
+
+    cout << "Digits = approximately 4 * number of limbs\n";
+    cout << "Karatsuba cutoff = " << CUTOFF << " limbs\n\n";
+
+    cout << left << setw(12) << "Limbs"
+         << setw(14) << "Digits"
+         << setw(18) << "School (ms)"
+         << setw(18) << "Karatsuba (ms)"
+         << "Faster\n";
+
+    int crossover = -1;
+
+    for (int n : sizes) {
+        Big a = randomNumber(n, rng);
+        Big b = randomNumber(n, rng);
+
+        // Reduce repetitions for larger inputs.
+        int repetitions = max(3, 20000 / (n * n));
+
+        // Verify both algorithms produce the same answer.
+        Big x = schoolBook(a, b);
+        Big y = karatsuba(a, b);
+
+        if (x != y) {
+            cerr << "ERROR: Results do not match!\n";
+            return 1;
+        }
+
+        double schoolMs = benchmark(
+            schoolBook, a, b, repetitions
+        );
+
+        double karaMs = benchmark(
+            karatsuba, a, b, repetitions
+        );
+
+        bool karaFaster = karaMs < schoolMs;
+
+        if (karaFaster && crossover == -1)
+            crossover = n;
+
+        cout << left << setw(12) << n
+             << setw(14) << (4 * n)
+             << setw(18) << fixed << setprecision(5)
+             << schoolMs
+             << setw(18) << karaMs
+             << (karaFaster ? "Karatsuba" : "School-book")
+             << '\n';
+    }
+
+    cout << "\nFirst tested crossover: ";
+
+    if (crossover == -1)
+        cout << "not found in tested sizes\n";
+    else
+        cout << crossover << " limbs (~"
+             << 4 * crossover << " digits)\n";
+
+    return 0;
+}
